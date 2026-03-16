@@ -1,10 +1,10 @@
 # Creatify Puppeteer Worker — Deployment Guide
 
-## Files in this folder
+## Files in this repo
 ```
 creatify-worker/
 ├── server.js        ← The automation server
-├── Dockerfile       ← Cloud Run container definition
+├── Dockerfile       ← Railway container definition
 ├── package.json     ← Node dependencies
 ├── .dockerignore    ← Keeps image small
 └── .gitignore       ← Never commit secrets
@@ -12,84 +12,82 @@ creatify-worker/
 
 ---
 
-## Deploy to Google Cloud Run (step by step)
+## Deploy to Railway (step by step)
 
-### Prerequisites
-- Google Cloud account (free tier works)
-- [Install Google Cloud CLI](https://cloud.google.com/sdk/docs/install)
+### Step 1 — Connect repo on Railway
+1. Go to [railway.app](https://railway.app) → New Project
+2. Click **GitHub Repository**
+3. Select **creatify-worker**
+4. Railway auto-detects the Dockerfile and starts building ✅
 
 ---
 
-### Step 1 — One-time setup
-
-```bash
-# Login
-gcloud auth login
-
-# Create a new project (or use existing)
-gcloud projects create creatify-worker-proj --name="Creatify Worker"
-gcloud config set project creatify-worker-proj
-
-# Enable required services
-gcloud services enable run.googleapis.com
-gcloud services enable cloudbuild.googleapis.com
+### Step 2 — Add environment variable
+1. Click your service → **Variables** tab
+2. Click **New Variable** and add:
+```
+BOOMLIFY_API_KEY = api_11db5c08a25e133dac9b1cc5264105c9933c32b4f92fb5a03e3f6d814c7e62e3
 ```
 
 ---
 
-### Step 2 — Deploy
+### Step 3 — Set memory to 2GB (required for Chrome)
+1. Click your service → **Settings** tab
+2. Scroll to **Resources**
+3. Set Memory → **2048 MB**
 
-Run this from inside the `creatify-worker/` folder:
+> Chrome/Puppeteer crashes with less than 2GB — this step is critical.
 
-```bash
-gcloud run deploy creatify-worker \
-  --source . \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --memory 2Gi \
-  --cpu 1 \
-  --timeout 300 \
-  --set-env-vars BOOMLIFY_API_KEY=api_11db5c08a25e133dac9b1cc5264105c9933c32b4f92fb5a03e3f6d814c7e62e3
+---
+
+### Step 4 — Get your public URL
+1. Click your service → **Settings** tab
+2. Scroll to **Networking**
+3. Click **Generate Domain**
+4. You'll get a URL like:
 ```
-
-> **`--timeout 300`** = 5 minutes. Increase to `--timeout 600` if video generation takes longer.
-> **`--memory 2Gi`** is required — Chrome crashes with less.
-
-When it finishes, you'll get a URL like:
-```
-https://creatify-worker-abc123-uc.a.run.app
+https://creatify-worker-production.up.railway.app
 ```
 
 ---
 
-### Step 3 — Test it
+### Step 5 — Test it
+Open any REST client or browser and POST to:
+```
+POST https://YOUR-RAILWAY-URL.up.railway.app/run
+Content-Type: application/json
 
-```bash
-curl -X POST https://YOUR-WORKER-URL.a.run.app/run \
-  -H "Content-Type: application/json" \
-  -d '{"productUrl":"https://example.com","jobId":"test-001"}'
+{
+  "productUrl": "https://example.com",
+  "jobId": "test-001"
+}
 ```
 
-You should get:
+Expected response:
 ```json
-{"success": true, "videoUrls": [], "jobId": "test-001"}
+{ "success": true, "videoUrls": [], "jobId": "test-001" }
 ```
 
-Health check:
-```bash
-curl https://YOUR-WORKER-URL.a.run.app/health
-# → {"status":"ok"}
+Health check (paste in browser):
 ```
+https://YOUR-RAILWAY-URL.up.railway.app/health
+→ { "status": "ok" }
+```
+
+---
+
+### Step 6 — Auto-deploys
+Every time you push to GitHub, Railway rebuilds automatically. No manual steps needed.
 
 ---
 
 ## n8n Workflow — 7 nodes
 
 ### Node 1: Webhook
-- Type: `Webhook`  
-- Method: `POST`  
-- Path: `generate-video`  
-- Response: `Using 'Respond to Webhook' Node`
+- Type: `Webhook`
+- Method: `POST`
+- Path: `generate-video`
+- Response Mode: `Using 'Respond to Webhook' Node`
 
 ### Node 2: Set
 - Name: `Set variables`
@@ -115,7 +113,7 @@ curl https://YOUR-WORKER-URL.a.run.app/health
 
 ### Node 4: HTTP Request — Call Puppeteer worker
 - Method: `POST`
-- URL: `https://YOUR-WORKER-URL.a.run.app/run`
+- URL: `https://YOUR-RAILWAY-URL.up.railway.app/run`
 - Timeout: `300000` (5 minutes in ms)
 - Body:
 ```json
@@ -146,22 +144,10 @@ curl https://YOUR-WORKER-URL.a.run.app/health
 
 ---
 
-## Updating the API key later
-
-```bash
-gcloud run services update creatify-worker \
-  --region us-central1 \
-  --set-env-vars BOOMLIFY_API_KEY=NEW_KEY_HERE
-```
+## Checking logs (when something goes wrong)
+Railway → your service → **Deployments** tab → click the latest deploy → **View Logs**
 
 ---
 
-## Checking logs (when something goes wrong)
-
-```bash
-gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=creatify-worker" \
-  --limit 50 \
-  --format "table(timestamp, textPayload)"
-```
-
-Or open Cloud Console → Cloud Run → creatify-worker → Logs tab.
+## Updating the API key later
+Railway → your service → **Variables** tab → click `BOOMLIFY_API_KEY` → edit value → Railway redeploys automatically.

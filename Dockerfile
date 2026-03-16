@@ -1,5 +1,4 @@
 # ── Base image ────────────────────────────────────────────────────────────────
-# node:20-slim keeps the image small; we install Chromium from Debian packages
 FROM node:20-slim
 
 # ── System dependencies for Chromium ──────────────────────────────────────────
@@ -39,14 +38,14 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 # ── App setup ─────────────────────────────────────────────────────────────────
 WORKDIR /usr/src/app
 
-# Copy and install dependencies first (layer-caching: only reinstalls on package change)
+# Copy and install dependencies
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev
 
 # Copy application code
 COPY server.js .
 
-# Cloud Run injects $PORT at runtime; expose 3000 as the fallback default
+# Expose port
 EXPOSE 3000
 
 # Run as non-root user for security

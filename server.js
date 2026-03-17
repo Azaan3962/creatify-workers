@@ -5,7 +5,7 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
-// ── Config (use env vars — never hardcode secrets in production) ──────────────
+// ── Config ────────────────────────────────────────────────────────────────────
 const BOOMLIFY_API_KEY = process.env.BOOMLIFY_API_KEY || 'api_11db5c08a25e133dac9b1cc5264105c9933c32b4f92fb5a03e3f6d814c7e62e3';
 const BOOMLIFY_BASE    = 'https://v1.boomlify.com/api/v1';
 const PORT             = process.env.PORT || 3000;
@@ -40,7 +40,7 @@ function findId(obj, depth = 0) {
   return null;
 }
 
-// React-compatible value setter — same trick as the Tampermonkey script
+// React-compatible value setter
 async function fillReactInput(page, selector, value) {
   await page.evaluate((sel, val) => {
     const el = document.querySelector(sel);
@@ -121,14 +121,25 @@ app.post('/run', async (req, res) => {
   }
 
   const browser = await puppeteer.launch({
-    // Use the system Chromium installed by the Dockerfile
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
     headless: 'new',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',   // prevents crashes in Docker's limited /dev/shm
+      '--disable-dev-shm-usage',      // use disk instead of /dev/shm
       '--disable-gpu',
+      '--single-process',             // run everything in one process — saves ~300MB
+      '--no-zygote',                  // disables the zygote process — saves ~100MB
+      '--disable-extensions',         // no extensions needed
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-sync',
+      '--disable-translate',
+      '--hide-scrollbars',
+      '--metrics-recording-only',
+      '--mute-audio',
+      '--no-first-run',
+      '--safebrowsing-disable-auto-update',
       '--window-size=1280,900',
     ],
   });
@@ -139,6 +150,18 @@ app.post('/run', async (req, res) => {
 
     // ── Step 2: Open Creatify login page ─────────────────────────────────────
     const page = await browser.newPage();
+
+    // Block images, fonts, media to save memory
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const type = req.resourceType();
+      if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
     await page.setViewport({ width: 1280, height: 900 });
     console.log('[worker] Navigating to Creatify login...');
     await page.goto('https://app.creatify.ai/auth/login', {
@@ -164,11 +187,11 @@ app.post('/run', async (req, res) => {
     if (!clicked) throw new Error('"Continue with email" button not found');
     console.log('[worker] Clicked "Continue with email"');
 
-    // ── Step 5: Poll Boomlify for OTP (page loads OTP form in parallel) ───────
+    // ── Step 5: Poll Boomlify for OTP ─────────────────────────────────────────
     const otp = await pollForOTP(emailId);
     console.log('[worker] OTP received:', otp);
 
-    // ── Step 6: Fill OTP into Creatify's code inputs ──────────────────────────
+    // ── Step 6: Fill OTP into Creatify ────────────────────────────────────────
     await page.waitForSelector('input.disabled\\:cursor-not-allowed', { timeout: 20000 });
     await sleep(1000);
 
@@ -179,7 +202,6 @@ app.post('/run', async (req, res) => {
     console.log('[worker] OTP input count detected:', inputCount);
 
     if (inputCount === 6) {
-      // Individual digit inputs
       const inputHandles = await page.$$('input.disabled\\:cursor-not-allowed');
       for (let i = 0; i < 6; i++) {
         await page.evaluate((el, char) => {
@@ -194,10 +216,8 @@ app.post('/run', async (req, res) => {
         await sleep(80);
       }
     } else {
-      // Single input for full code
       await fillReactInput(page, 'input.disabled\\:cursor-not-allowed', otp);
       await sleep(500);
-      // Click submit/verify
       await page.evaluate(() => {
         const labels = ['verify', 'confirm', 'sign in', 'log in', 'login', 'continue', 'submit'];
         const btn = Array.from(document.querySelectorAll('button'))
@@ -216,23 +236,8 @@ app.post('/run', async (req, res) => {
     console.log('[worker] Logged in successfully, on home page');
 
     // ── Step 8: Video generation ──────────────────────────────────────────────
-    // TODO: Add Creatify video generation steps here.
-    // Inspect Creatify's UI to find the selectors, then fill them in below.
-    // Example skeleton:
-    //
-    // await page.waitForSelector('[data-testid="create-video-btn"]', { timeout: 10000 });
-    // await page.click('[data-testid="create-video-btn"]');
-    // await page.waitForSelector('input[placeholder*="product URL"]', { timeout: 10000 });
-    // await fillReactInput(page, 'input[placeholder*="product URL"]', productUrl);
-    // await page.click('[data-testid="generate-btn"]');
-    //
-    // Then wait for video URLs to appear and collect them:
-    // await page.waitForSelector('[data-testid="video-result"]', { timeout: 120000 });
-    // const videoUrls = await page.$$eval('[data-testid="video-result"] a', els =>
-    //   els.map(el => el.href)
-    // );
-
-    const videoUrls = []; // Replace with real collection once Step 8 selectors are known
+    // TODO: Add Creatify video generation steps here once selectors are known
+    const videoUrls = [];
 
     console.log('[worker] Done — videoUrls:', videoUrls);
     res.json({ success: true, videoUrls, jobId });
@@ -245,7 +250,7 @@ app.post('/run', async (req, res) => {
   }
 });
 
-// ── Health check (Cloud Run pings this to confirm container is alive) ─────────
+// ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => console.log(`[worker] Puppeteer worker running on port ${PORT}`));

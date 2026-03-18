@@ -5,12 +5,9 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
-// ── Config ────────────────────────────────────────────────────────────────────
 const BOOMLIFY_API_KEY = process.env.BOOMLIFY_API_KEY || 'api_11db5c08a25e133dac9b1cc5264105c9933c32b4f92fb5a03e3f6d814c7e62e3';
 const BOOMLIFY_BASE    = 'https://v1.boomlify.com/api/v1';
 const PORT             = process.env.PORT || 3000;
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -40,11 +37,10 @@ function findId(obj, depth = 0) {
   return null;
 }
 
-// React-compatible value setter
 async function fillReactInput(page, selector, value) {
   await page.evaluate((sel, val) => {
     const el = document.querySelector(sel);
-    if (!el) throw new Error(`Selector not found: ${sel}`);
+    if (!el) throw new Error('Selector not found: ' + sel);
     const nativeSetter = Object.getOwnPropertyDescriptor(
       window.HTMLInputElement.prototype, 'value'
     ).set;
@@ -57,67 +53,54 @@ async function fillReactInput(page, selector, value) {
   }, selector, value);
 }
 
-// ── Boomlify helpers ──────────────────────────────────────────────────────────
-
 async function createTempEmail() {
-  console.log('[worker] Creating temp email via Boomlify...');
+  console.log('[worker] Creating temp email...');
   const res = await axios.post(
-    `${BOOMLIFY_BASE}/emails/create`,
-    {},
-    { headers: { 'X-API-Key': BOOMLIFY_API_KEY, 'Content-Type': 'application/json' } }
+    `${BOOMLIFY_BASE}/emails/create`, {},
+    { headers: { 'X-API-Key': BOOMLIFY_API_KEY } }
   );
-  const data = res.data;
-  console.log('[worker] Boomlify create response:', JSON.stringify(data, null, 2));
-  const email = findEmail(data);
-  const id    = findId(data);
-  if (!email) throw new Error('Could not extract email from Boomlify response');
-  if (!id)    throw new Error('Could not extract email ID from Boomlify response');
-  console.log('[worker] Temp email:', email, '| ID:', id);
+  const email = findEmail(res.data);
+  const id    = findId(res.data);
+  if (!email) throw new Error('No email in Boomlify response');
+  if (!id)    throw new Error('No ID in Boomlify response');
+  console.log('[worker] Email:', email, 'ID:', id);
   return { email, id };
 }
 
 async function pollForOTP(emailId, maxAttempts = 30) {
-  console.log('[worker] Polling Boomlify inbox for OTP, emailId:', emailId);
+  console.log('[worker] Polling for OTP...');
   for (let i = 0; i < maxAttempts; i++) {
     await sleep(4000);
-    console.log(`[worker] OTP poll attempt ${i + 1}/${maxAttempts}...`);
+    console.log(`[worker] Poll ${i + 1}/${maxAttempts}`);
     const res = await axios.get(
       `${BOOMLIFY_BASE}/emails/${emailId}/messages`,
       { headers: { 'X-API-Key': BOOMLIFY_API_KEY } }
     );
     const data = res.data;
-    let messages = [];
-    if (Array.isArray(data))               messages = data;
-    else if (Array.isArray(data.messages)) messages = data.messages;
-    else if (Array.isArray(data.data))     messages = data.data;
-    else if (typeof data === 'object')
-      messages = Object.values(data).find(v => Array.isArray(v)) || [];
+    let messages = Array.isArray(data) ? data
+      : Array.isArray(data.messages) ? data.messages
+      : Array.isArray(data.data) ? data.data : [];
 
     for (const msg of messages) {
-      const body = [msg.body, msg.html, msg.text, msg.content, msg.snippet, JSON.stringify(msg)]
+      const body = [msg.body, msg.html, msg.text, msg.content, JSON.stringify(msg)]
         .filter(Boolean).join('\n');
-      console.log('[worker] Message subject:', msg.subject || '(none)');
-      console.log('[worker] Body preview:', body.substring(0, 200));
       const matches = [...body.matchAll(/\b([0-9]{6})\b/g)];
       if (matches.length > 0) {
         const code = matches[matches.length - 1][1];
-        console.log('[worker] OTP found:', code);
+        console.log('[worker] OTP:', code);
         return code;
       }
     }
-    console.log('[worker] No OTP yet, waiting...');
   }
-  throw new Error('OTP polling timed out after ' + maxAttempts + ' attempts');
+  throw new Error('OTP timeout');
 }
-
-// ── Main automation route ─────────────────────────────────────────────────────
 
 app.post('/run', async (req, res) => {
   const { productUrl, jobId } = req.body;
-  console.log('[worker] /run called — jobId:', jobId, '| productUrl:', productUrl);
+  console.log('[worker] /run — jobId:', jobId);
 
   if (!productUrl || !jobId) {
-    return res.status(400).json({ success: false, error: 'productUrl and jobId are required' });
+    return res.status(400).json({ success: false, error: 'productUrl and jobId required' });
   }
 
   const browser = await puppeteer.launch({
@@ -126,117 +109,117 @@ app.post('/run', async (req, res) => {
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',      // use disk instead of /dev/shm
+      '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--single-process',             // run everything in one process — saves ~300MB
-      '--no-zygote',                  // disables the zygote process — saves ~100MB
-      '--disable-extensions',         // no extensions needed
+      '--no-zygote',
+      '--single-process',
+      '--no-first-run',
+      '--disable-extensions',
       '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-breakpad',
+      '--disable-client-side-phishing-detection',
+      '--disable-component-extensions-with-background-pages',
       '--disable-default-apps',
+      '--disable-features=TranslateUI',
+      '--disable-hang-monitor',
+      '--disable-ipc-flooding-protection',
+      '--disable-popup-blocking',
+      '--disable-prompt-on-repost',
+      '--disable-renderer-backgrounding',
       '--disable-sync',
       '--disable-translate',
-      '--hide-scrollbars',
       '--metrics-recording-only',
       '--mute-audio',
-      '--no-first-run',
       '--safebrowsing-disable-auto-update',
-      '--window-size=1280,900',
+      '--js-flags=--max-old-space-size=256',
+      '--window-size=800,600',
     ],
   });
 
   try {
-    // ── Step 1: Create temp email ─────────────────────────────────────────────
     const { email, id: emailId } = await createTempEmail();
 
-    // ── Step 2: Open Creatify login page ─────────────────────────────────────
     const page = await browser.newPage();
 
-    // Block images, fonts, media to save memory
+    // Block all heavy resources
     await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const type = req.resourceType();
-      if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
-        req.abort();
+    page.on('request', (request) => {
+      const type = request.resourceType();
+      const url  = request.url();
+      if (
+        ['image', 'media', 'font', 'stylesheet', 'other'].includes(type) ||
+        url.includes('analytics') ||
+        url.includes('hotjar') ||
+        url.includes('intercom') ||
+        url.includes('segment') ||
+        url.includes('sentry')
+      ) {
+        request.abort();
       } else {
-        req.continue();
+        request.continue();
       }
     });
 
-    await page.setViewport({ width: 1280, height: 900 });
-    console.log('[worker] Navigating to Creatify login...');
+    await page.setViewport({ width: 800, height: 600 });
+
+    console.log('[worker] Going to Creatify login...');
     await page.goto('https://app.creatify.ai/auth/login', {
-      waitUntil: 'networkidle2',
+      waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
 
-    // ── Step 3: Fill email field ──────────────────────────────────────────────
     await page.waitForSelector('input#email', { timeout: 15000 });
     await fillReactInput(page, 'input#email', email);
-    console.log('[worker] Email field filled:', email);
+    console.log('[worker] Email filled');
 
-    // ── Step 4: Click "Continue with email" ──────────────────────────────────
     await sleep(800);
     const clicked = await page.evaluate(() => {
-      const buttons = Array.from(document.querySelectorAll('button'));
-      const btn = buttons.find(b =>
-        b.innerText && b.innerText.toLowerCase().includes('continue with email')
-      );
+      const btn = Array.from(document.querySelectorAll('button'))
+        .find(b => b.innerText && b.innerText.toLowerCase().includes('continue with email'));
       if (btn) { btn.click(); return true; }
       return false;
     });
-    if (!clicked) throw new Error('"Continue with email" button not found');
-    console.log('[worker] Clicked "Continue with email"');
+    if (!clicked) throw new Error('Continue button not found');
+    console.log('[worker] Clicked Continue');
 
-    // ── Step 5: Poll Boomlify for OTP ─────────────────────────────────────────
     const otp = await pollForOTP(emailId);
-    console.log('[worker] OTP received:', otp);
 
-    // ── Step 6: Fill OTP into Creatify ────────────────────────────────────────
     await page.waitForSelector('input.disabled\\:cursor-not-allowed', { timeout: 20000 });
-    await sleep(1000);
+    await sleep(500);
 
-    const inputCount = await page.$$eval(
-      'input.disabled\\:cursor-not-allowed',
-      els => els.length
-    );
-    console.log('[worker] OTP input count detected:', inputCount);
+    const inputCount = await page.$$eval('input.disabled\\:cursor-not-allowed', els => els.length);
+    console.log('[worker] OTP inputs:', inputCount);
 
     if (inputCount === 6) {
-      const inputHandles = await page.$$('input.disabled\\:cursor-not-allowed');
+      const handles = await page.$$('input.disabled\\:cursor-not-allowed');
       for (let i = 0; i < 6; i++) {
         await page.evaluate((el, char) => {
-          const nativeSetter = Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype, 'value'
-          ).set;
-          nativeSetter.call(el, char);
+          const s = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          s.call(el, char);
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
-          el.dispatchEvent(new KeyboardEvent('keyup',   { bubbles: true }));
-        }, inputHandles[i], otp[i]);
+          el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        }, handles[i], otp[i]);
         await sleep(80);
       }
     } else {
       await fillReactInput(page, 'input.disabled\\:cursor-not-allowed', otp);
       await sleep(500);
       await page.evaluate(() => {
-        const labels = ['verify', 'confirm', 'sign in', 'log in', 'login', 'continue', 'submit'];
         const btn = Array.from(document.querySelectorAll('button'))
-          .find(b => labels.some(l => (b.innerText || '').toLowerCase().includes(l)));
+          .find(b => ['verify','confirm','sign in','login','continue','submit']
+            .some(l => (b.innerText||'').toLowerCase().includes(l)));
         if (btn) btn.click();
       });
     }
     console.log('[worker] OTP filled');
 
-    // ── Step 7: Wait for login, go to home ───────────────────────────────────
     await page.waitForNavigation({ timeout: 15000 }).catch(() => {});
-    await page.goto('https://app.creatify.ai/home', {
-      waitUntil: 'networkidle2',
-      timeout: 30000,
-    });
-    console.log('[worker] Logged in successfully, on home page');
+    console.log('[worker] Logged in successfully');
 
-    // ── Step 8: Video generation ──────────────────────────────────────────────
-    // TODO: Add Creatify video generation steps here once selectors are known
+    // Step 8: Video generation — TODO
     const videoUrls = [];
 
     console.log('[worker] Done — videoUrls:', videoUrls);
@@ -246,11 +229,10 @@ app.post('/run', async (req, res) => {
     console.error('[worker] ERROR:', err.message);
     res.status(500).json({ success: false, error: err.message, jobId });
   } finally {
-    await browser.close();
+    await browser.close().catch(() => {});
   }
 });
 
-// ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-app.listen(PORT, () => console.log(`[worker] Puppeteer worker running on port ${PORT}`));
+app.listen(PORT, () => console.log(`[worker] Running on port ${PORT}`));
